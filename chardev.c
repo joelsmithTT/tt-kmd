@@ -13,6 +13,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/version.h>
 #include <linux/hashtable.h>
+#include <linux/file.h>
 
 #include "device.h"
 #include "enumerate.h"
@@ -611,6 +612,100 @@ err_free_pinning:
 	return ret;
 }
 
+static long ioctl_map_peer_bar(struct chardev_private *priv,
+			       struct tenstorrent_map_peer_bar __user *arg) {
+
+	struct file *peer_file;
+	struct chardev_private *peer_priv;
+	resource_size_t resource_len;
+	phys_addr_t phys_addr;
+	dma_addr_t mapping;
+	int ret;
+
+	struct tenstorrent_map_peer_bar_in in;
+	struct tenstorrent_map_peer_bar_out out;
+
+	memset(&in, 0, sizeof(in));
+	memset(&out, 0, sizeof(out));
+
+	if (copy_from_user(&in, &arg->in, sizeof(in)) != 0)
+		return -EFAULT;
+
+	if (in.flags != 0)
+		return -EINVAL;
+
+	if (in.peer_bar_index >= PCI_NUM_RESOURCES)
+		return -EINVAL;
+
+	if (in.peer_bar_length == 0)
+		return -EINVAL;
+
+	peer_file = fget(in.peer_fd);
+	if (!peer_file)
+		return -EBADF;
+
+	if (peer_file->f_op != &chardev_fops) {
+		ret = -EINVAL;
+		goto err_fput;
+	}
+
+	peer_priv = peer_file->private_data;
+
+	if (peer_priv->device == priv->device) {
+		ret = -EINVAL;
+		goto err_fput;
+	}
+
+	if (peer_priv->device->dev_class != priv->device->dev_class) {
+		ret = -EINVAL;
+		goto err_fput;
+	}
+
+	// Avoid deadlocks on concurrent calls to IOCTL_MAP_PEER_BAR
+	// by locking in a globally-consistent order.
+	if (priv->device < peer_priv->device) {
+		mutex_lock(&priv->mutex);
+		mutex_lock(&peer_priv->mutex);
+	} else {
+		mutex_lock(&peer_priv->mutex);
+		mutex_lock(&priv->mutex);
+	}
+
+	resource_len = pci_resource_len(peer_priv->device->pdev, in.peer_bar_index);
+	if (in.peer_bar_offset >= resource_len || in.peer_bar_length > resource_len - in.peer_bar_offset) {
+		ret = -EINVAL;
+		goto err_unlock;
+	}
+
+	phys_addr = pci_resource_start(peer_priv->device->pdev, in.peer_bar_index) + in.peer_bar_offset;
+
+	mapping = dma_map_resource(&priv->device->pdev->dev, phys_addr, in.peer_bar_length, DMA_BIDIRECTIONAL, 0);
+	ret = dma_mapping_error(&priv->device->pdev->dev, mapping);
+	if (ret != 0)
+		goto err_unlock;
+
+	mutex_unlock(&priv->mutex);
+	mutex_unlock(&peer_priv->mutex);
+
+	fput(peer_file);
+
+	out.dma_address = mapping;
+
+	if (copy_to_user(&arg->out, &out, sizeof(out)) != 0)
+		return -EFAULT;
+
+	return 0;
+
+err_unlock:
+	mutex_unlock(&priv->mutex);
+	mutex_unlock(&peer_priv->mutex);
+
+err_fput:
+	fput(peer_file);
+	return ret;
+}
+
+
 static long tt_cdev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
 	long ret = -EINVAL;
@@ -646,6 +741,10 @@ static long tt_cdev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 		case TENSTORRENT_IOCTL_PIN_PAGES:
 			ret = ioctl_pin_pages(priv, (struct tenstorrent_pin_pages __user *)arg);
+			break;
+
+		case TENSTORRENT_IOCTL_MAP_PEER_BAR:
+			ret = ioctl_map_peer_bar(priv, (struct tenstorrent_map_peer_bar __user *)arg);
 			break;
 
 		default:
