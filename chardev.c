@@ -159,6 +159,13 @@ struct pinned_page_range {
 	struct sg_table dma_mapping;	// alloc_chained_sgt_for_pages / free_chained_sgt
 };
 
+struct peer_resource_mapping {
+	struct list_head list;
+
+	dma_addr_t mapped_address;
+	size_t size;
+};
+
 // This is our device-private data assocated with each open character device fd.
 // Accessed through struct file::private_data.
 struct chardev_private {
@@ -166,6 +173,7 @@ struct chardev_private {
 	struct mutex mutex;
 	DECLARE_HASHTABLE(dmabufs, DMABUF_HASHTABLE_BITS);	// keyed on by dmabuf.index, chained on struct dmabuf.hash_chain
 	struct list_head pinnings;	// struct pinned_page_range.list
+	struct list_head peer_mappings; // struct peer_resource_mapping.list
 };
 
 static dev_t tt_device_id;
@@ -663,6 +671,7 @@ static long ioctl_map_peer_bar(struct chardev_private *priv,
 
 	struct file *peer_file;
 	struct chardev_private *peer_priv;
+	struct peer_resource_mapping *peer_mapping;
 	resource_size_t resource_len;
 	phys_addr_t phys_addr;
 	dma_addr_t mapping;
@@ -707,6 +716,12 @@ static long ioctl_map_peer_bar(struct chardev_private *priv,
 		goto err_fput;
 	}
 
+	peer_mapping = kmalloc(sizeof(*peer_mapping), GFP_KERNEL);
+	if (!peer_mapping) {
+		ret = -ENOMEM;
+		goto err_fput;
+	}
+
 	// Avoid deadlocks on concurrent calls to IOCTL_MAP_PEER_BAR
 	// by locking in a globally-consistent order.
 	if (priv->device < peer_priv->device) {
@@ -730,6 +745,11 @@ static long ioctl_map_peer_bar(struct chardev_private *priv,
 	if (ret != 0)
 		goto err_unlock;
 
+	peer_mapping->mapped_address = mapping;
+	peer_mapping->size = in.peer_bar_length;
+
+	list_add(&peer_mapping->list, &priv->peer_mappings);
+
 	mutex_unlock(&priv->mutex);
 	mutex_unlock(&peer_priv->mutex);
 
@@ -746,8 +766,11 @@ err_unlock:
 	mutex_unlock(&priv->mutex);
 	mutex_unlock(&peer_priv->mutex);
 
+	kfree(peer_mapping);
+
 err_fput:
 	fput(peer_file);
+
 	return ret;
 }
 
@@ -931,6 +954,7 @@ static int tt_cdev_open(struct inode *inode, struct file *file)
 
 	hash_init(private_data->dmabufs);
 	INIT_LIST_HEAD(&private_data->pinnings);
+	INIT_LIST_HEAD(&private_data->peer_mappings);
 
 	private_data->device = tt_dev;
 	file->private_data = private_data;
@@ -948,6 +972,7 @@ static int tt_cdev_release(struct inode *inode, struct file *file)
 	struct hlist_node *tmp_dmabuf;
 	struct dmabuf *dmabuf;
 	unsigned int i;
+	struct peer_resource_mapping *peer_mapping, *tmp_peer_mapping;
 
 	decrement_cdev_open_count(tt_dev);
 
@@ -967,6 +992,13 @@ static int tt_cdev_release(struct inode *inode, struct file *file)
 
 		list_del(&pinning->list);
 		kfree(pinning);
+	}
+
+	list_for_each_entry_safe(peer_mapping, tmp_peer_mapping, &priv->peer_mappings, list) {
+		dma_unmap_resource(&priv->device->pdev->dev, peer_mapping->mapped_address, peer_mapping->size, DMA_BIDIRECTIONAL, 0);
+
+		list_del(&peer_mapping->list);
+		kfree(peer_mapping);
 	}
 
 	kfree(file->private_data);
