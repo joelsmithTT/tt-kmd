@@ -106,7 +106,7 @@ fail_bar0:
 	return false;
 }
 
-#define NOC_ADDR_NODE_ID_BITS     6 
+#define NOC_ADDR_NODE_ID_BITS     6
 #define NOC_ADDR_LOCAL_BITS       36
 static u64 encode_sys_addr(u32 chip_x, u32 chip_y, u32 noc_x, u32 noc_y, u64 offset) {
 	u64 result = chip_y; // shelf
@@ -145,8 +145,8 @@ static u32 wormhole_hwmon_read32(u64 offset, struct tt_hwmon_context *context, i
 
 	offset += ARC_CSM_NOC;
 	core_info = &wh_dev->connected_eth_cores[0];
-	sys_addr = encode_sys_addr(core_info->remote_shelf_x, core_info->remote_shelf_y, ARC_NOC_X, ARC_NOC_Y, offset);
-	rack = ((u16)core_info->remote_rack_y) << 8 | core_info->remote_rack_x;
+	sys_addr = encode_sys_addr(core_info->remote.shelf_x, core_info->remote.shelf_y, ARC_NOC_X, ARC_NOC_Y, offset);
+	rack = ((u16)core_info->remote.rack_y) << 8 | core_info->remote.rack_x;
 
 	// FIXME: This must be synchronized with UMD somehow.
 	// Using eth core 0 to do the actual read.
@@ -294,7 +294,7 @@ void wh_setup_tlb(struct wormhole_device *wh_dev, struct tlb_t *tlb, struct noc_
 	wh_program_tlb(wh_dev, tlb);
 }
 
-bool wormhole_noc_read(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, void *dst, size_t size) {
+bool wh_noc_read(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, void *dst, size_t size) {
 	struct wormhole_device *wh_dev = tt_dev_to_wh_dev(tt_dev);
 	struct tlb_pool *pool = &wh_dev->tlb_pool;
 	bool manage_tlb = (tlb == NULL);
@@ -316,7 +316,7 @@ bool wormhole_noc_read(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, str
 	return true;
 }
 
-bool wormhole_noc_write(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, const void *src, size_t size) {
+bool wh_noc_write(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, const void *src, size_t size) {
 	struct wormhole_device *wh_dev = tt_dev_to_wh_dev(tt_dev);
 	struct tlb_pool *pool = &wh_dev->tlb_pool;
 	bool manage_tlb = (tlb == NULL);
@@ -338,12 +338,41 @@ bool wormhole_noc_write(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, st
 	return true;
 }
 
-bool wormhole_noc_read32(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, u32 *val) {
-	return wormhole_noc_read(tt_dev, tlb, noc_addr, val, sizeof(*val));
+bool wh_tlb_noc_read32(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, u32 *val) {
+	return wh_noc_read(tt_dev, tlb, noc_addr, val, sizeof(*val));
 }
 
-bool wormhole_noc_write32(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, u32 val) {
-	return wormhole_noc_write(tt_dev, tlb, noc_addr, &val, sizeof(val));
+bool wh_tlb_noc_write32(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, u32 val) {
+	return wh_noc_write(tt_dev, tlb, noc_addr, &val, sizeof(val));
+}
+
+u32 wh_tlb_noc_xy_read32(struct tenstorrent_device *tt_dev, u32 x, u32 y, u64 addr, struct tlb_t *tlb)
+{
+	struct noc_addr_t noc_addr = { .addr = addr, .x = x, .y = y };
+	u32 value;
+	wh_tlb_noc_read32(tt_dev, tlb, &noc_addr, &value);
+	// pr_info("GANK: x: %d, y: %d, addr: %llx, value: %x\n", x, y, addr, value);
+	return value;
+}
+
+u32 wh_noc_xy_read32(struct tenstorrent_device *tt_dev, u32 x, u32 y, u64 addr)
+{
+	return wh_tlb_noc_xy_read32(tt_dev, x, y, addr, NULL);
+}
+
+void wh_noc_xy_write32(struct tenstorrent_device *tt_dev, u32 x, u32 y, u64 addr, u32 value)
+{
+	struct noc_addr_t noc_addr = { .addr = addr, .x = x, .y = y };
+	wh_noc_write(tt_dev, NULL, &noc_addr, &value, sizeof(value));
+}
+
+u32 wh_topology_read32(struct tenstorrent_device *tt_dev, struct topology_addr_t *addr)
+{
+	struct wormhole_device *wh_dev = tt_dev_to_wh_dev(tt_dev);
+	struct eth_addr_t eth_addr = {
+		.rack_x = addr->rack_x, .rack_y = addr->rack_y, .shelf_x = addr->shelf_x, .shelf_y = addr->shelf_y
+	};
+	return maybe_remote_read32(wh_dev, &eth_addr, addr->noc_x, addr->noc_y, addr->addr);
 }
 
 struct tenstorrent_device_class wormhole_class = {
@@ -353,6 +382,7 @@ struct tenstorrent_device_class wormhole_class = {
 	.init_hardware = wormhole_init_hardware,
 	.cleanup_device = wormhole_cleanup,
 	.reboot = wormhole_reboot,
-	.noc_read32 = wormhole_noc_read32,
-	.noc_write32 = wormhole_noc_write32,
+	.noc_read32 = wh_noc_xy_read32,
+	.noc_write32 = wh_noc_xy_write32,
+	.topology_read32 = wh_topology_read32,
 };

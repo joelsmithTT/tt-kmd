@@ -681,6 +681,59 @@ static long ioctl_lock_ctl(struct chardev_private *priv,
 	return 0;
 }
 
+static long ioctl_noc_io(struct chardev_private *priv,
+				struct tenstorrent_noc_io __user *arg) {
+	struct tenstorrent_device *tt_dev = priv->device;
+	u32 bytes_to_copy;
+
+	struct tenstorrent_noc_io_in in;
+	struct tenstorrent_noc_io_out out;
+
+	memset(&in, 0, sizeof(in));
+	memset(&out, 0, sizeof(out));
+
+	if (copy_from_user(&in, &arg->in, sizeof(in)) != 0)
+		return -EFAULT;
+
+	switch (in.flags) {
+	case TENSTORRENT_NOC_IO_READ32:
+		out.data = tt_dev->dev_class->noc_read32(tt_dev, in.noc_x, in.noc_y, in.address);
+		pr_info("What we got from the read32: %d\n", out.data);
+		break;
+	case TENSTORRENT_NOC_IO_WRITE32:
+		tt_dev->dev_class->noc_write32(tt_dev, in.noc_x, in.noc_y, in.address, in.data);
+		break;
+	case TENSTORRENT_TOPOLOGY_IO_READ32:
+		if (tt_dev->dev_class->topology_read32) {
+			struct topology_addr_t topo_addr = {
+				.addr = in.address,
+				.noc_x = in.noc_x,
+				.noc_y = in.noc_y,
+				.shelf_x = in.shelf_x,
+				.shelf_y = in.shelf_y,
+				.rack_x = in.rack_x,
+				.rack_y = in.rack_y,
+			};
+			out.data = tt_dev->dev_class->topology_read32(tt_dev, &topo_addr);
+		} else {
+			return -EINVAL;
+		}
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (clear_user(&arg->out, in.output_size_bytes) != 0)
+		return -EFAULT;
+
+	bytes_to_copy = min(in.output_size_bytes, (u32)sizeof(out));
+
+	if (copy_to_user(&arg->out, &out, bytes_to_copy) != 0)
+		return -EFAULT;
+
+	return 0;
+}
+
 static long tt_cdev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
 	long ret = -EINVAL;
@@ -720,6 +773,10 @@ static long tt_cdev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 		case TENSTORRENT_IOCTL_LOCK_CTL:
 			ret = ioctl_lock_ctl(priv, (struct tenstorrent_lock_ctl __user *)arg);
+			break;
+
+		case TENSTORRENT_IOCTL_NOC_IO:
+			ret = ioctl_noc_io(priv, (struct tenstorrent_noc_io __user *)arg);
 			break;
 
 		default:

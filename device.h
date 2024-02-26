@@ -44,6 +44,16 @@ struct noc_addr_t {
 	u32 y;
 };
 
+struct topology_addr_t {
+	u64 addr;
+	u32 noc_x;
+	u32 noc_y;
+	u32 shelf_x;
+	u32 shelf_y;
+	u32 rack_x;
+	u32 rack_y;
+};
+
 struct tlb_t;
 
 struct tenstorrent_device_class {
@@ -55,8 +65,9 @@ struct tenstorrent_device_class {
 	void (*first_open_cb)(struct tenstorrent_device *ttdev);
 	void (*last_release_cb)(struct tenstorrent_device *ttdev);
 	void (*reboot)(struct tenstorrent_device *ttdev);
-	bool (*noc_read32)(struct tenstorrent_device *ttdev, struct tlb_t *tlb, struct noc_addr_t *addr, u32 *val);
-	bool (*noc_write32)(struct tenstorrent_device *ttdev, struct tlb_t *tlb, struct noc_addr_t *addr, u32 val);
+	u32 (*noc_read32)(struct tenstorrent_device *ttdev, u32 x, u32 y, u64 addr);
+	void (*noc_write32)(struct tenstorrent_device *ttdev, u32 x, u32 y, u64 addr, u32 data);
+	u32 (*topology_read32)(struct tenstorrent_device *ttdev, struct topology_addr_t *addr);
 };
 
 void tenstorrent_device_put(struct tenstorrent_device *);

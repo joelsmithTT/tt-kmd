@@ -20,6 +20,7 @@
 #define TENSTORRENT_IOCTL_RESET_DEVICE		_IO(TENSTORRENT_IOCTL_MAGIC, 6)
 #define TENSTORRENT_IOCTL_PIN_PAGES		_IO(TENSTORRENT_IOCTL_MAGIC, 7)
 #define TENSTORRENT_IOCTL_LOCK_CTL		_IO(TENSTORRENT_IOCTL_MAGIC, 8)
+#define TENSTORRENT_IOCTL_NOC_IO		_IO(TENSTORRENT_IOCTL_MAGIC, 9)
 
 // For tenstorrent_mapping.mapping_id. These are not array indices.
 #define TENSTORRENT_MAPPING_UNUSED		0
@@ -176,6 +177,35 @@ struct tenstorrent_lock_ctl_out {
 struct tenstorrent_lock_ctl {
 	struct tenstorrent_lock_ctl_in in;
 	struct tenstorrent_lock_ctl_out out;
+};
+
+// tenstorrent_noc_io_in.flags
+#define TENSTORRENT_NOC_IO_READ32 0
+#define TENSTORRENT_NOC_IO_WRITE32 1
+#define TENSTORRENT_TOPOLOGY_IO_READ32 2
+#define TENSTORRENT_TOPOLOGY_IO_WRITE32 3
+struct tenstorrent_noc_io_in {
+	__u32 output_size_bytes;
+	__u32 flags;
+	__u32 noc_x;
+	__u32 noc_y;
+	__u64 address;
+	__u32 data;
+	// Fields below ignored when flags < 2
+	__u32 rack_x;
+	__u32 rack_y;
+	__u32 shelf_x;
+	__u32 shelf_y;
+};
+
+struct tenstorrent_noc_io_out {
+	__u32 result;
+	__u32 data;
+};
+
+struct tenstorrent_noc_io {
+	struct tenstorrent_noc_io_in in;
+	struct tenstorrent_noc_io_out out;
 };
 
 #endif

@@ -25,9 +25,14 @@ struct wormhole_device {
 	container_of((tt_dev), struct wormhole_device, tt)
 
 
-bool wormhole_noc_write32(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, u32 val);
-bool wormhole_noc_read32(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, u32 *val);
-bool wormhole_noc_write(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr,
+bool wh_tlb_noc_write32(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, u32 val);
+bool wh_tlb_noc_read32(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, u32 *val);
+
+bool wh_noc_write(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr,
 				const void *src, size_t size);
+bool wh_noc_read(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, void *dst,
+				size_t size);
+
+u32 wh_tlb_noc_xy_read32(struct tenstorrent_device *tt_dev, u32 x, u32 y, u64 addr, struct tlb_t *tlb);
 
 #endif

@@ -886,44 +886,35 @@ static void grayskull_setup_tlb(struct grayskull_device *gs_dev, struct tlb_t *t
 	gs_program_tlb(gs_dev, tlb);
 }
 
-static bool grayskull_noc_read32(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, u32 *val) {
+static u32 grayskull_noc_read32(struct tenstorrent_device *tt_dev, u32 x, u32 y, u64 addr) {
 	struct grayskull_device *gs_dev = tt_dev_to_gs_dev(tt_dev);
 	struct tlb_pool *pool = &gs_dev->tlb_pool;
-	bool manage_tlb = (tlb == NULL);
-
-	if (manage_tlb)
-		tlb = tlb_alloc(pool);
+	struct tlb_t *tlb = tlb_alloc(pool);
+	struct noc_addr_t noc_addr = { .addr = addr, .x = x, .y = y };	// TODO: ergonomics
+	u32 val;
 
 	if (!tlb)
-		return false;
+		return 0xFFFFFFFFU;
 
-	grayskull_setup_tlb(gs_dev, tlb, noc_addr);
-	*val = ioread32(gs_dev->bar0_mapping + TLB_OFFSET(tlb->index) + (noc_addr->addr % tlb->size));
-
-	if (manage_tlb)
-		tlb_free(tlb);
+	grayskull_setup_tlb(gs_dev, tlb, &noc_addr);
+	val = ioread32(gs_dev->bar0_mapping + TLB_OFFSET(tlb->index) + (noc_addr.addr % tlb->size));
+	tlb_free(tlb);
 
 	return true;
 }
 
-static bool grayskull_noc_write32(struct tenstorrent_device *tt_dev, struct tlb_t *tlb, struct noc_addr_t *noc_addr, u32 val) {
+static void grayskull_noc_write32(struct tenstorrent_device *tt_dev, u32 x, u32 y, u64 addr, u32 val) {
 	struct grayskull_device *gs_dev = tt_dev_to_gs_dev(tt_dev);
 	struct tlb_pool *pool = &gs_dev->tlb_pool;
-	bool manage_tlb = (tlb == NULL);
-
-	if (manage_tlb)
-		tlb = tlb_alloc(pool);
+	struct tlb_t *tlb = tlb_alloc(pool);
+	struct noc_addr_t noc_addr = { .addr = addr, .x = x, .y = y };	// TODO: ergonomics
 
 	if (!tlb)
-		return false;
+		return;	// Too bad!
 
-	grayskull_setup_tlb(gs_dev, tlb, noc_addr);
-	iowrite32(val, gs_dev->bar0_mapping + TLB_OFFSET(tlb->index) + (noc_addr->addr % tlb->size));
-
-	if (manage_tlb)
-		tlb_free(tlb);
-
-	return true;
+	grayskull_setup_tlb(gs_dev, tlb, &noc_addr);
+	iowrite32(val, gs_dev->bar0_mapping + TLB_OFFSET(tlb->index) + (noc_addr.addr % tlb->size));
+	tlb_free(tlb);
 }
 
 struct tenstorrent_device_class grayskull_class = {
