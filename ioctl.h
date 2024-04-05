@@ -20,6 +20,7 @@
 #define TENSTORRENT_IOCTL_RESET_DEVICE		_IO(TENSTORRENT_IOCTL_MAGIC, 6)
 #define TENSTORRENT_IOCTL_PIN_PAGES		_IO(TENSTORRENT_IOCTL_MAGIC, 7)
 #define TENSTORRENT_IOCTL_MAP_PEER_BAR		_IO(TENSTORRENT_IOCTL_MAGIC, 8)
+#define TENSTORRENT_IOCTL_TENSIX_DMA	_IO(TENSTORRENT_IOCTL_MAGIC, 9)
 
 // For tenstorrent_mapping.mapping_id. These are not array indices.
 #define TENSTORRENT_MAPPING_UNUSED		0
@@ -173,6 +174,22 @@ struct tenstorrent_map_peer_bar_out {
 struct tenstorrent_map_peer_bar {
 	struct tenstorrent_map_peer_bar_in in;
 	struct tenstorrent_map_peer_bar_out out;
+};
+
+struct tenstorrent_tensix_dma_in {
+	__u64 requested_size;
+	__u8 index;
+	__u8  reserved0[3];
+};
+
+struct tenstorrent_tensix_dma_out {
+	__u64 tensix_offset;
+	__u64 mapping_offset;
+};
+
+struct tenstorrent_tensix_dma {
+	struct tenstorrent_tensix_dma_in in;
+	struct tenstorrent_tensix_dma_out out;
 };
 
 #endif

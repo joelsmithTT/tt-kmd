@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
 // SPDX-License-Identifier: GPL-2.0-only
 
+#include "asm-generic/errno-base.h"
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -15,6 +16,8 @@
 #include <linux/hashtable.h>
 #include <linux/file.h>
 #include <linux/iommu.h>
+#include <linux/hugetlb.h>
+#include <linux/hugetlb_cgroup.h>
 
 #include "device.h"
 #include "enumerate.h"
@@ -151,6 +154,21 @@ struct dmabuf {
 	u8 index;
 };
 
+#define MMAP_OFFSET_TENSIX_DMA_BUF ((u64)(PAGE_SIZE-U8_MAX) << 36)
+#define MMAP_SIZE_TENSIX_DMA_BUF (U64_C(1) << 32)
+
+struct tensix_dmabuf {
+	struct hlist_node hash_chain;
+
+	struct page **pages;
+	void *ptr;
+	dma_addr_t iova;
+	u64 size;
+	u8 index;
+
+	struct sg_table dma_mapping;
+};
+
 struct pinned_page_range {
 	struct list_head list;
 
@@ -175,6 +193,8 @@ struct chardev_private {
 	DECLARE_HASHTABLE(dmabufs, DMABUF_HASHTABLE_BITS);	// keyed on by dmabuf.index, chained on struct dmabuf.hash_chain
 	struct list_head pinnings;	// struct pinned_page_range.list
 	struct list_head peer_mappings; // struct peer_resource_mapping.list
+
+	DECLARE_HASHTABLE(tensix_dmabufs, DMABUF_HASHTABLE_BITS);
 };
 
 static dev_t tt_device_id;
@@ -192,6 +212,12 @@ static struct file_operations chardev_fops = {
 	.mmap = tt_cdev_mmap,
 	.open = tt_cdev_open,
 	.release = tt_cdev_release,
+};
+
+static int tt_cdev_mmap_buffer(struct file *, struct vm_area_struct *);
+static struct file_operations chardev_buffer_fops = {
+	.owner = THIS_MODULE,
+	.mmap = tt_cdev_mmap_buffer,
 };
 
 int init_char_driver(unsigned int max_devices)
@@ -381,8 +407,37 @@ static struct dmabuf *lookup_dmabuf_by_index(struct chardev_private *priv, u8 bu
 	return NULL;
 }
 
+static struct tensix_dmabuf *lookup_tensix_dmabuf_by_index(struct chardev_private *priv, u8 buf_index) {
+	struct tensix_dmabuf *dmabuf;
+
+	hash_for_each_possible(priv->tensix_dmabufs, dmabuf, hash_chain, buf_index)
+		if (dmabuf->index == buf_index)
+			return dmabuf;
+
+	return NULL;
+}
+
+static u64 tensix_dmabuf_total_allocated(struct chardev_private *priv) {
+	struct tensix_dmabuf *dmabuf;
+	unsigned bkt;
+	u64 total = 0;
+
+	mutex_lock(&priv->mutex);
+	hash_for_each(priv->tensix_dmabufs, bkt, dmabuf, hash_chain) {
+		pr_info("what the total fuck?\n");
+		total += dmabuf->size;
+	}
+	mutex_unlock(&priv->mutex);
+
+	return total;
+}
+
 static u64 dmabuf_mapping_start(u8 buf_index) {
 	return MMAP_OFFSET_DMA_BUF + buf_index * MMAP_SIZE_DMA_BUF;
+}
+
+static u64 tensix_dmabuf_mapping_start(u8 buf_index) {
+	return MMAP_OFFSET_TENSIX_DMA_BUF + buf_index * MMAP_SIZE_TENSIX_DMA_BUF;
 }
 
 static long ioctl_allocate_dma_buf(struct chardev_private *priv,
@@ -411,6 +466,7 @@ static long ioctl_allocate_dma_buf(struct chardev_private *priv,
 	    || in.requested_size == 0
 	    || in.requested_size > MAX_DMA_BUF_SIZE)
 		return -EINVAL;
+
 
 	mutex_lock(&priv->mutex);
 
@@ -808,6 +864,167 @@ err_fput:
 	return ret;
 }
 
+// Do I want to collect these and then iATU setup all at once?
+// Or just iATU setup them all each time one is allocated?
+// What about allocating and setup at driver init as opposed to in a user
+// initiated code path?
+#define MAX_TENSIX_DMA_BUF_SIZE (4ULL * 1024 * 1024 * 1024)
+static long ioctl_tensix_dma(struct chardev_private *priv,
+			       struct tenstorrent_tensix_dma __user *arg) {
+
+	struct tenstorrent_tensix_dma_in in;
+	struct tenstorrent_tensix_dma_out out;
+	int numa_node;
+	void *memory;
+	struct tensix_dmabuf *tensix_dmabuf;
+	struct sg_table dma_mapping = {0};
+	unsigned long nr_pages;
+	struct page **pages;
+	long ret;
+	struct scatterlist *sg;
+	unsigned int i;
+	dma_addr_t expected_next_address;
+	u64 already_allocated = 0;
+	unsigned long total_dma_len = 0;
+
+	memset(&in, 0, sizeof(in));
+	memset(&out, 0, sizeof(out));
+
+	if (already_allocated >= MAX_TENSIX_DMA_BUF_SIZE) {
+		pr_err("Already allocated %llu bytes of tensix DMA buffers\n", already_allocated);
+		return -ENOMEM;
+	}
+
+	if (!is_iommu_translated(&priv->device->pdev->dev))
+		return -EINVAL;
+
+	if (copy_from_user(&in, &arg->in, sizeof(in)) != 0)
+		return -EFAULT;
+
+	if (!PAGE_ALIGNED(in.requested_size) || in.requested_size == 0)
+		return -EINVAL;
+
+	// Buffer sizes must be at a granularity of 256MB; the reason for this is
+	// due to a quirk in the firmware code that programs the iATU.  There are
+	// 16 outbound iATU regions; every 256MB of Tensix DMA buffer will consume
+	// one region for a total of 4GB of Tensix DMA buffer space.  WH and GS
+	// can not address beyond that (in fact, they are limited to 0xfffd'ffff).
+	if (in.requested_size % 0x100000000ULL != 0)
+		return -EINVAL;
+
+	mutex_lock(&priv->mutex);
+
+	tensix_dmabuf = lookup_tensix_dmabuf_by_index(priv, in.index);
+	if (tensix_dmabuf) {
+		pr_info("Tensix DMA buffer %d already allocated\n", in.index);
+		ret = -EEXIST;
+		goto err_unlock_priv;
+	}
+
+	numa_node = dev_to_node(&priv->device->pdev->dev);
+	memory = vmalloc_node(in.requested_size, numa_node);
+	dma_addr_t dma_handle;
+
+	if (!memory) {
+		pr_err("vmalloc_node failed for %llu bytes on node %d\n", in.requested_size, numa_node);
+		ret = -ENOMEM;
+		goto err_unlock_priv;
+	}
+	memset(memory, 0, in.requested_size);
+
+	tensix_dmabuf = kmalloc(sizeof(*tensix_dmabuf), GFP_KERNEL);
+	if (!tensix_dmabuf) {
+		ret = -ENOMEM;
+		goto err_free_memory;
+	}
+
+	nr_pages = PAGE_ALIGN(in.requested_size) >> PAGE_SHIFT;
+	pages = vzalloc(nr_pages * sizeof(struct page *));
+	if (!pages) {
+		pr_err("vzalloc failed for %lu page pointers\n", nr_pages);
+		ret = -ENOMEM;
+		goto err_free_tensix_dmabuf;
+	}
+
+	pr_info("Allocated %lu pages at %p\n", nr_pages, pages);
+	for (i = 0; i < nr_pages; i++) {
+		pages[i] = vmalloc_to_page(memory + i * PAGE_SIZE);
+	}
+
+	if (!alloc_chained_sgt_for_pages(&dma_mapping, pages, nr_pages)) {
+		pr_warn("alloc_chained_sgt_for_pages failed for %lu pages, probably out of memory.\n", nr_pages);
+		ret = -ENOMEM;
+		goto err_free_pages;
+	}
+
+	ret = dma_map_sgtable(&priv->device->pdev->dev, &dma_mapping, DMA_BIDIRECTIONAL, 0);
+
+	if (ret != 0) {
+		pr_err("dma_map_sg failed.\n");
+		goto err_free_chained_sgt;
+	}
+
+	// This can only happen due to a misconfiguration or a bug.
+	for_each_sgtable_dma_sg((&dma_mapping), sg, i) {
+		if (i > 0 && sg_dma_address(sg) != expected_next_address) {
+			pr_err("discontiguous mapping\n");
+			ret = -EINVAL;
+		}
+
+		expected_next_address = sg_dma_address(sg) + sg_dma_len(sg);
+		total_dma_len += sg_dma_len(sg);
+	}
+
+	if (total_dma_len != nr_pages * PAGE_SIZE) {
+		pr_err("dma-mapped (%lX) != original length (%lX).\n", total_dma_len, nr_pages * PAGE_SIZE);
+		ret = -EINVAL;
+	}
+
+	if (ret != 0) {
+		debug_print_sgtable(&dma_mapping);
+		goto err_dma_unmap;
+	}
+
+	tensix_dmabuf->pages = pages;
+	tensix_dmabuf->dma_mapping = dma_mapping;
+	tensix_dmabuf->ptr = memory;
+	tensix_dmabuf->iova = sg_dma_address(dma_mapping.sgl);
+	tensix_dmabuf->size = in.requested_size;
+	tensix_dmabuf->index = in.index;
+
+	// TODO: need to hang these off the device not the fd, so they can be shared
+	// amongst user processes.
+	hash_add(priv->tensix_dmabufs, &tensix_dmabuf->hash_chain, tensix_dmabuf->index);
+
+	out.mapping_offset = tensix_dmabuf_mapping_start(in.index);
+
+	if (copy_to_user(&arg->out, &out, sizeof(out)) != 0) {
+		ret = -EFAULT;
+		goto err_dma_unmap;		
+	}
+
+	mutex_unlock(&priv->mutex);
+
+	pr_info("Allocated %llu bytes at %p on node %d; IOVA: %llx\n", in.requested_size, memory, numa_node, tensix_dmabuf->iova);
+
+	return 0;
+
+err_dma_unmap:
+	dma_unmap_sgtable(&priv->device->pdev->dev, &dma_mapping, DMA_BIDIRECTIONAL, 0);
+err_free_chained_sgt:
+	free_chained_sgt(&dma_mapping);
+err_free_pages:
+	vfree(pages);
+err_free_tensix_dmabuf:
+	kfree(tensix_dmabuf);
+err_free_memory:
+	vfree(memory);
+err_unlock_priv:
+	mutex_unlock(&priv->mutex);
+
+	return ret;
+}
+
 
 static long tt_cdev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
@@ -849,7 +1066,10 @@ static long tt_cdev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		case TENSTORRENT_IOCTL_MAP_PEER_BAR:
 			ret = ioctl_map_peer_bar(priv, (struct tenstorrent_map_peer_bar __user *)arg);
 			break;
-
+		
+		case TENSTORRENT_IOCTL_TENSIX_DMA:
+			ret = ioctl_tensix_dma(priv, (struct tenstorrent_tensix_dma __user *)arg);
+			break;
 		default:
 			ret = -EINVAL;
 			break;
@@ -894,6 +1114,32 @@ static struct dmabuf *vma_dmabuf_target(struct chardev_private *priv,
 		return NULL;
 
 	if (vma_target_range(vma, dmabuf_mapping_start(dmabuf_index), dmabuf->size))
+		return dmabuf;
+	else
+		// Allocated DMA buffer does not cover requested size.
+		return NULL;
+}
+
+static struct tensix_dmabuf *vma_tensix_dmabuf_target(struct chardev_private *priv,
+					struct vm_area_struct *vma) {
+	unsigned long dmabuf_index;
+	struct tensix_dmabuf *dmabuf;
+
+	if (vma->vm_pgoff < MMAP_OFFSET_TENSIX_DMA_BUF >> PAGE_SHIFT)
+		// Not in DMA buffer offset range (too low).
+		return NULL;
+
+	dmabuf_index = (vma->vm_pgoff - (MMAP_OFFSET_TENSIX_DMA_BUF >> PAGE_SHIFT)) / (MMAP_SIZE_TENSIX_DMA_BUF >> PAGE_SHIFT);
+	if (dmabuf_index >= TENSTORRENT_MAX_DMA_BUFS)
+		// Not in DMA buffer offset range (too high).
+		return NULL;
+
+	dmabuf = lookup_tensix_dmabuf_by_index(priv, dmabuf_index);
+	if (!dmabuf)
+		// No allocated DMA buffer for that index.
+		return NULL;
+
+	if (vma_target_range(vma, tensix_dmabuf_mapping_start(dmabuf_index), dmabuf->size))
 		return dmabuf;
 	else
 		// Allocated DMA buffer does not cover requested size.
@@ -946,12 +1192,24 @@ static int tt_cdev_mmap(struct file *file, struct vm_area_struct *vma)
 
 	} else {
 		struct dmabuf *dmabuf = vma_dmabuf_target(priv, vma);
+		struct tensix_dmabuf *tensix_dmabuf = vma_tensix_dmabuf_target(priv, vma);
 		if (dmabuf != NULL)
 			return dma_mmap_coherent(&pdev->dev, vma, dmabuf->ptr,
 						 dmabuf->phys, dmabuf->size);
+		else if (tensix_dmabuf != NULL) {
+			unsigned long pfn = __phys_to_pfn(virt_to_phys(tensix_dmabuf->ptr));
+			unsigned long size = vma->vm_end - vma->vm_start;
+			pr_info("GANK\n");
+			return remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
+		}
 		else
 			return -EINVAL;
 	}
+}
+
+static int tt_cdev_mmap_buffer(struct file *file, struct vm_area_struct *vma)
+{
+	return 0;
 }
 
 static struct tenstorrent_device *inode_to_tt_dev(struct inode *inode)
@@ -987,6 +1245,7 @@ static int tt_cdev_open(struct inode *inode, struct file *file)
 	mutex_init(&private_data->mutex);
 
 	hash_init(private_data->dmabufs);
+	hash_init(private_data->tensix_dmabufs);
 	INIT_LIST_HEAD(&private_data->pinnings);
 	INIT_LIST_HEAD(&private_data->peer_mappings);
 
@@ -1005,6 +1264,7 @@ static int tt_cdev_release(struct inode *inode, struct file *file)
 	struct pinned_page_range *pinning, *tmp_pinning;
 	struct hlist_node *tmp_dmabuf;
 	struct dmabuf *dmabuf;
+	struct tensix_dmabuf *tensix_dmabuf;
 	unsigned int i;
 	struct peer_resource_mapping *peer_mapping, *tmp_peer_mapping;
 
@@ -1015,6 +1275,17 @@ static int tt_cdev_release(struct inode *inode, struct file *file)
 
 		hash_del(&dmabuf->hash_chain);
 		kfree(dmabuf);
+	}
+
+	hash_for_each_safe(priv->tensix_dmabufs, i, tmp_dmabuf, tensix_dmabuf, hash_chain) {
+		pr_info("Freeing tensix_dmabuf %d\n", tensix_dmabuf->index);
+
+		dma_unmap_sgtable(&priv->device->pdev->dev, &tensix_dmabuf->dma_mapping, DMA_BIDIRECTIONAL, 0);
+		free_chained_sgt(&tensix_dmabuf->dma_mapping);
+		vfree(tensix_dmabuf->pages);
+		vfree(tensix_dmabuf->ptr);
+		hash_del(&tensix_dmabuf->hash_chain);
+		kfree(tensix_dmabuf);
 	}
 
 	list_for_each_entry_safe(pinning, tmp_pinning, &priv->pinnings, list) {

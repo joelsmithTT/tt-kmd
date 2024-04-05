@@ -36,6 +36,7 @@
 
 #define TTKMD_ARC_IF_OFFSET 0x77000
 #define ARC_CSM_ROW_HARVESTING_OFFSET 0x7836C
+#define ARC_CSM_MAILBOX_OFFSET 0x783BC
 
 #define SCRATCH_REG(n) (0x60 + (n)*sizeof(u32))	/* byte offset */
 
@@ -74,6 +75,7 @@
 #define GS_FW_MSG_ASTATE3 0xA3
 #define GS_FW_MSG_ASTATE5 0xA5
 #define GS_FW_MSG_CURR_DATE 0xB7
+#define GS_FW_MSG_IATU_SETUP 0x97
 
 #define GS_ARC_L2_FW_NAME "tenstorrent_gs_arc_l2_fw.bin"
 #define GS_ARC_L2_FW_SIZE_BYTES 0xF000
@@ -677,6 +679,35 @@ void grayskull_send_curr_date(u8 __iomem* reset_unit_regs) {
 						packed_datetime_low, packed_datetime_high, 1000, NULL);
 }
 
+bool grayskull_program_outbound_iatu(struct grayskull_device *gs_dev, u32 region, u64 bus_addr, u32 size) {
+	u32 tlb_offset = program_tlb(gs_dev, 0, 4, 0, 0); // PCIe is (0,4) in NOC0, addr=0
+	u8 __iomem* tlb = gs_dev->kernel_tlb + tlb_offset;
+
+	// DBI enable
+	// iowrite32(0x00200000, gs_dev->reset_unit_regs + 0x78;
+#if 0
+	auto ARC_RESET = 0x1FF30000;
+    auto PCI_RESERVED = 0x0078;
+
+    auto dbi_addr = ARC_RESET | PCI_RESERVED;
+
+    device.bar_write32(0, dbi_addr, 0x00200000);
+    device.bar_write32(0, dbi_addr + 4, 0x00200000);
+#endif
+
+	u8 __iomem* mailbox = gs_dev->reg_iomap + ARC_CSM_MEMORY_OFFSET + ARC_CSM_MAILBOX_OFFSET;
+	u32 bus_addr_lo = bus_addr & 0xFFFFFFFFU;
+	u32 bus_addr_hi = (bus_addr >> 32) & 0xFFFFFFFFU;
+
+	iowrite32(region, mailbox + 0 * 4);
+	iowrite32(bus_addr_lo, mailbox + 1 * 4);
+	iowrite32(bus_addr_hi, mailbox + 2 * 4);
+	iowrite32(size, mailbox + 3 * 4);
+
+	return grayskull_send_arc_fw_message(gs_dev->reset_unit_regs, GS_FW_MSG_IATU_SETUP, 10000, NULL);
+}
+
+#define TENSIX_DMA_SIZE (4ULL * 1024 * 1024 * 1024)
 bool grayskull_init(struct tenstorrent_device *tt_dev) {
 	struct grayskull_device *gs_dev = tt_dev_to_gs_dev(tt_dev);
 
@@ -693,6 +724,14 @@ bool grayskull_init(struct tenstorrent_device *tt_dev) {
 	}
 
 	gs_dev->reset_unit_regs = gs_dev->reg_iomap + RESET_UNIT_REG_OFFSET;
+
+	gs_dev->tensix_dma = dma_alloc_coherent(&gs_dev->tt.pdev->dev, TENSIX_DMA_SIZE, &gs_dev->tensix_dma_handle, GFP_KERNEL);
+	if (gs_dev->tensix_dma == NULL)
+		dev_err(&gs_dev->tt.pdev->dev, "Failed to allocate DMA buffer\n");
+	else {
+		pr_info("Allocated DMA buffer at %p\n", gs_dev->tensix_dma);
+		pr_info("DMA handle: %llx\n", gs_dev->tensix_dma_handle);
+	}
 
 	return true;
 }
@@ -731,6 +770,9 @@ void grayskull_cleanup(struct tenstorrent_device *tt_dev) {
 
 	if (gs_dev->kernel_tlb != NULL)
 		pci_iounmap(gs_dev->tt.pdev, gs_dev->kernel_tlb);
+
+	if (gs_dev->tensix_dma)
+		dma_free_coherent(&gs_dev->tt.pdev->dev, TENSIX_DMA_SIZE, gs_dev->tensix_dma, gs_dev->tensix_dma_handle);
 }
 
 static void grayskull_last_release_handler(struct tenstorrent_device *tt_dev) {

@@ -15,6 +15,10 @@ struct grayskull_device {
 	u32 enabled_rows;	// bitmap of enabled Tensix rows (NOC0-indexed)
 	u32 watchdog_fw_reset_vec;
 	u32 smbus_fw_reset_vec;
+
+	dma_addr_t tensix_dma_handle;
+	u32 tensix_dma_size;
+	void *tensix_dma;
 };
 
 #define tt_dev_to_gs_dev(ttdev) \
@@ -28,5 +32,6 @@ bool grayskull_send_arc_fw_message_with_args(u8 __iomem* reset_unit_regs,
 					     u32 timeout_us, u16* exit_code);
 bool arc_l2_is_running(u8 __iomem* reset_unit_regs);
 void grayskull_send_curr_date(u8 __iomem* reset_unit_regs);
+bool grayskull_program_outbound_iatu(struct grayskull_device *gs_dev, u32 region, u64 bus_addr, u32 size);
 
 #endif

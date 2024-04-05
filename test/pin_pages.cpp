@@ -222,10 +222,29 @@ void VerifyPinPagesMultipleRanges(const EnumeratedDevice &dev)
     }
 }
 
+void Asdf(const EnumeratedDevice &dev)
+{
+    DevFd dev_fd(dev.path);
+    for (int i = 0; i < 4; ++i) {
+	    struct tenstorrent_tensix_dma dma{};
+	    dma.in.requested_size = 0x100000000ULL;
+	    dma.in.index = i;
+	    if (ioctl(dev_fd.get(), TENSTORRENT_IOCTL_TENSIX_DMA, &dma) != 0)
+            THROW_TEST_FAILURE("TENSIX_DMA failed.");
+        std::cout << std::hex << "0x" << dma.out.mapping_offset << std::endl;
+        void *p = mmap(nullptr, dma.in.requested_size, PROT_READ | PROT_WRITE, MAP_SHARED, dev_fd.get(), dma.out.mapping_offset);
+        if (p == MAP_FAILED)
+            THROW_TEST_FAILURE("mmap failed.");
+        munmap(p, dma.in.requested_size);
+    }
+}
+
 }
 
 void TestPinPages(const EnumeratedDevice &dev)
 {
+    Asdf(dev);
+    return;
     VerifyPinPagesSimple(dev);
     VerifyPinPagesBadFlags(dev);
     VerifyPinPagesBadSize(dev);

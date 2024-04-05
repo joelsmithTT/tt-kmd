@@ -19,6 +19,8 @@
 #define TENSTORRENT_IOCTL_GET_DRIVER_INFO	_IO(TENSTORRENT_IOCTL_MAGIC, 5)
 #define TENSTORRENT_IOCTL_RESET_DEVICE		_IO(TENSTORRENT_IOCTL_MAGIC, 6)
 #define TENSTORRENT_IOCTL_PIN_PAGES		_IO(TENSTORRENT_IOCTL_MAGIC, 7)
+#define TENSTORRENT_IOCTL_MAP_PEER_BAR		_IO(TENSTORRENT_IOCTL_MAGIC, 8)
+#define TENSTORRENT_IOCTL_TENSIX_DMA	_IO(TENSTORRENT_IOCTL_MAGIC, 9)
 
 // For tenstorrent_mapping.mapping_id. These are not array indices.
 #define TENSTORRENT_MAPPING_UNUSED		0
@@ -137,7 +139,8 @@ struct tenstorrent_reset_device {
 };
 
 // tenstorrent_pin_pages_in.flags
-#define TENSTORRENT_PIN_PAGES_CONTIGUOUS 1
+#define TENSTORRENT_PIN_PAGES_CONTIGUOUS 1	// ttkmd verifies that the pages are physically contiguous
+#define TENSTORRENT_PIN_PAGES_INTO_IOMMU 2	// ttkmd uses iommu to map pages, need not be physically contiguous
 
 struct tenstorrent_pin_pages_in {
 	__u32 output_size_bytes;
@@ -153,6 +156,40 @@ struct tenstorrent_pin_pages_out {
 struct tenstorrent_pin_pages {
 	struct tenstorrent_pin_pages_in in;
 	struct tenstorrent_pin_pages_out out;
+};
+
+struct tenstorrent_map_peer_bar_in {
+	__u32 peer_fd;
+	__u32 peer_bar_index;
+	__u32 peer_bar_offset;
+	__u32 peer_bar_length;
+	__u32 flags;
+};
+
+struct tenstorrent_map_peer_bar_out {
+	__u64 dma_address;
+	__u64 reserved;
+};
+
+struct tenstorrent_map_peer_bar {
+	struct tenstorrent_map_peer_bar_in in;
+	struct tenstorrent_map_peer_bar_out out;
+};
+
+struct tenstorrent_tensix_dma_in {
+	__u64 requested_size;
+	__u8 index;
+	__u8  reserved0[3];
+};
+
+struct tenstorrent_tensix_dma_out {
+	__u64 tensix_offset;
+	__u64 mapping_offset;
+};
+
+struct tenstorrent_tensix_dma {
+	struct tenstorrent_tensix_dma_in in;
+	struct tenstorrent_tensix_dma_out out;
 };
 
 #endif
