@@ -133,6 +133,7 @@ static void unpin_user_pages_dirty_lock(struct page **pages, unsigned long npage
 #define MMAP_OFFSET_RESOURCE1_WC	(U64_C(3) << 32)
 #define MMAP_OFFSET_RESOURCE2_UC	(U64_C(4) << 32)
 #define MMAP_OFFSET_RESOURCE2_WC	(U64_C(5) << 32)
+#define MMAP_OFFSET_RESOURCE_TENSIX_DMA	(U64_C(6) << 32)
 
 // tenstorrent_allocate_dma_buf_in.buf_index is u8 so that sets a limit of
 // U8_MAX DMA buffers per fd. 32-bit mmap offsets are divided by PAGE_SIZE,
@@ -824,6 +825,18 @@ static int tt_cdev_mmap(struct file *file, struct vm_area_struct *vma)
 		vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 		return map_pci_bar(pdev, vma, 4);
 
+	// TODO: This is a hack to allow the user to mmap the Tensix DMA buffer.
+	// Could be queryable by the query ioctl, or we could stick it in its own
+	// character device.  For now, userspace needs to know size and offset.
+	} else if (vma_target_range(vma, MMAP_OFFSET_RESOURCE_TENSIX_DMA, TENSIX_DMA_SIZE)) {
+		struct tenstorrent_device *tt_dev = priv->device;
+		pr_info("mmap tensix dma buffer\n");
+		// TODO: Reserve some of this buffer for the driver's own use.
+		int r = dma_mmap_coherent(&pdev->dev, vma, tt_dev->tensix_dma_virt_aligned,
+						tt_dev->tensix_dma_addr_aligned, TENSIX_DMA_SIZE);
+		
+		pr_info("mmaped tensix dma buffer: %d\n", r);
+		return r;
 	} else {
 		struct dmabuf *dmabuf = vma_dmabuf_target(priv, vma);
 		if (dmabuf != NULL)

@@ -9,9 +9,11 @@
 #include <linux/version.h>
 
 #include "enumerate.h"
+#include "device.h"
 #include "interrupt.h"
 #include "chardev.h"
 #include "grayskull.h"
+#include "pcie.h"
 #include "module.h"
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
@@ -23,6 +25,9 @@
 
 DEFINE_IDR(tenstorrent_dev_idr);
 DEFINE_MUTEX(tenstorrent_dev_idr_mutex);
+
+#define TENSIX_DMA_OFFSET 0x80a00000
+// #define TENSIX_DMA_OFFSET 0
 
 static int tenstorrent_reboot_notifier(struct notifier_block *nb,
 				       unsigned long action, void *data) {
@@ -39,6 +44,8 @@ static int tenstorrent_pci_probe(struct pci_dev *dev, const struct pci_device_id
 	struct tenstorrent_device *tt_dev = NULL;
 	int ordinal;
 	const struct tenstorrent_device_class *device_class = (const struct tenstorrent_device_class *)id->driver_data;
+	void *dma_virt;
+	dma_addr_t dma_addr;
 
 	printk(KERN_INFO "Found a Tenstorrent %s device at bus %04x:%d.\n",
 	       device_class->name, (unsigned)pci_domain_nr(dev->bus), (int)dev->bus->number);
@@ -76,9 +83,38 @@ static int tenstorrent_pci_probe(struct pci_dev *dev, const struct pci_device_id
 
 	mutex_init(&tt_dev->chardev_mutex);
 
-	tt_dev->dma_capable = (dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(dma_address_bits ?: 32)) == 0);
+	// The PCIE controller is capable of 64-bit addressing, but the Tensix cores
+	// have a limited aperture through which they can access the system bus.
+	// With no address translation, this aperture corresponds to system bus
+	// address range 0x0000'0000 to 0xFFFD'FFFF.  However, the PCIE controller
+	// allows for remapping of the aperture to any 64-bit address range.  Hence,
+	// DMA mask is set to 64 bits to allow for greater flexibility in either
+	// IOVA (if system IOMMU is enabled) or PA (if system IOMMU is disabled).
+	tt_dev->dma_capable = (dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(dma_address_bits ?: 64)) == 0);
 	pci_set_master(dev);
 	pci_enable_pcie_error_reporting(dev);
+
+	// Allocate a giant buffer for Tensix DMA.
+	// TODO: is there a way to do this in a NUMA-aware way?
+	dma_virt = dma_alloc_coherent(&tt_dev->pdev->dev, TENSIX_DMA_ALLOC_SIZE, &dma_addr, GFP_KERNEL);
+	if (dma_virt == NULL) {
+		// Without system IOMMU, dma_alloc_coherent is forced to allocate a
+		// contiguous block of memory.  This has a high probability of failure
+		// unless CMA is enabled.
+		dev_err(&tt_dev->pdev->dev, "Failed to allocate Tensix DMA memory.\n");
+	} else {
+		pr_info("Actual physical address of Tensix DMA buffer: %llx\n", (unsigned long long)dma_addr);
+		pr_info("Actual virtual address of Tensix DMA buffer: %px\n", dma_virt);
+		tt_dev->tensix_dma_addr = dma_addr;
+		tt_dev->tensix_dma_virt = dma_virt;
+
+		// Align both to 256MB boundary.
+		tt_dev->tensix_dma_addr_aligned = (dma_addr + 0x10000000ULL - 1) & ~0xFFFFFFFULL;
+		tt_dev->tensix_dma_virt_aligned = (void *)(((u64)dma_virt + 0x10000000ULL - 1) & ~0xFFFFFFFULL);
+
+		pr_info("Aligned physical address of Tensix DMA buffer: %llx\n", (unsigned long long)tt_dev->tensix_dma_addr_aligned);
+		pr_info("Aligned virtual address of Tensix DMA buffer: %px\n", tt_dev->tensix_dma_virt_aligned);
+	}
 
 	pci_set_drvdata(dev, tt_dev);
 
@@ -102,6 +138,10 @@ static int tenstorrent_pci_probe(struct pci_dev *dev, const struct pci_device_id
 static void tenstorrent_pci_remove(struct pci_dev *dev)
 {
 	struct tenstorrent_device *tt_dev = pci_get_drvdata(dev);
+
+	if (tt_dev->tensix_dma_virt) {
+		dma_free_coherent(&tt_dev->pdev->dev, TENSIX_DMA_ALLOC_SIZE, tt_dev->tensix_dma_virt, tt_dev->tensix_dma_addr);
+	}
 
 	// These remove child sysfs entries which must happen before remove returns.
 	tenstorrent_unregister_device(tt_dev);
