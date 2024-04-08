@@ -778,6 +778,53 @@ void grayskull_send_curr_date(u8 __iomem* reset_unit_regs) {
 						packed_datetime_low, packed_datetime_high, 1000, NULL);
 }
 
+#define IATU_CONFIG_BASE 0x300000
+#define IATU_REGION_SIZE (1 << 28)
+#define IATU_REGION_COUNT 16
+/**
+ * grayskull_setup_outbound_iatu() - Configure address translation for outbound
+ * Tensix DMA.
+ *
+ * @tensix_dma: PA or IOVA of a 4 GiB contiguous buffer.
+ *
+ * Context: DMA must be idle.
+ */
+static void grayskull_setup_outbound_iatu(struct grayskull_device *gs_dev, dma_addr_t tensix_dma) {
+	size_t region;
+
+	// Reveal the iATU configuration registers.
+	iowrite32(0x200000, gs_dev->reset_unit_regs + 0x78);
+	iowrite32(0x200000, gs_dev->reset_unit_regs + 0x7C);
+
+	for (region = 0; region < IATU_REGION_COUNT; ++region) {
+		const dma_addr_t region_dma = tensix_dma + (region * IATU_REGION_SIZE);
+		const u32 tlb_offset = program_tlb(gs_dev, 0, 4, 0, IATU_CONFIG_BASE + (region * 0x200));
+		const u32 ctrl1 = 0x0;
+		const u32 ctrl2 = 0x88280000;
+		const u32 base_lo = region * IATU_REGION_SIZE;
+		const u32 base_hi = 0;
+		const u32 limit = ((1 + region) * IATU_REGION_SIZE) - 1;
+		const u32 target_lo = region_dma & 0xFFFFFFFF;
+		const u32 target_hi = (region_dma >> 32) & 0xFFFFFFFF;
+		u8 __iomem *tlb = gs_dev->kernel_tlb + tlb_offset;
+
+		iowrite32(ctrl1, tlb + 0x00);
+		iowrite32(ctrl2, tlb + 0x04);
+
+		iowrite32(base_lo, tlb + 0x08);
+		iowrite32(base_hi, tlb + 0x0C);
+
+		iowrite32(limit, tlb + 0x10);
+
+		iowrite32(target_lo, tlb + 0x14);
+		iowrite32(target_hi, tlb + 0x18);
+	}
+
+	// Hide the iATU configuration registers.
+	iowrite32(0x0, gs_dev->reset_unit_regs + 0x78);
+	iowrite32(0x0, gs_dev->reset_unit_regs + 0x7C);
+}
+
 static bool grayskull_init(struct tenstorrent_device *tt_dev) {
 	struct grayskull_device *gs_dev = tt_dev_to_gs_dev(tt_dev);
 
@@ -794,6 +841,13 @@ static bool grayskull_init(struct tenstorrent_device *tt_dev) {
 	}
 
 	gs_dev->reset_unit_regs = gs_dev->reg_iomap + RESET_UNIT_REG_OFFSET;
+
+	// As long as userspace can change iATU configuration, we can't assume it
+	// is in a known state.  Yet we need it in a known state for our Tensix DMA
+	// buffer to work.
+	//
+	// TODO: do we need to support a userspace that can change iATU config?
+	grayskull_setup_outbound_iatu(gs_dev, tt_dev->tensix_dma_addr);
 
 	return true;
 }
