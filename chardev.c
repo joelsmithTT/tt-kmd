@@ -251,6 +251,11 @@ void tenstorrent_unregister_device(struct tenstorrent_device *tt_dev)
 	cdev_device_del(&tt_dev->chardev, &tt_dev->dev);
 }
 
+static long ioctl_dummy(struct chardev_private *priv, void __user *arg)
+{
+	return 0;
+}
+
 static long ioctl_get_device_info(struct chardev_private *priv,
 				  struct tenstorrent_get_device_info __user *arg)
 {
@@ -695,6 +700,10 @@ static long tt_cdev_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	struct chardev_private *priv = f->private_data;
 
 	switch (cmd) {
+		case TENSTORRENT_IOCTL_DUMMY:
+			ret = ioctl_dummy(priv, (void*)arg);
+			break;
+
 		case TENSTORRENT_IOCTL_GET_DEVICE_INFO:
 			ret = ioctl_get_device_info(priv, (struct tenstorrent_get_device_info __user *)arg);
 			break;
