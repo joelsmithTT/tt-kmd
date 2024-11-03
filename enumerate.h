@@ -15,6 +15,9 @@
 #define PCI_DEVICE_ID_GRAYSKULL	0xFACA
 #define PCI_DEVICE_ID_WORMHOLE	0x401E
 
+#define PCI_VENDOR_ID_XILINX 0x10ee
+#define PCI_DEVICE_ID_SQUIRREL 0x0666
+
 struct pci_dev;
 struct cdev;
 
