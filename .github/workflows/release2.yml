@@ -232,6 +232,7 @@ jobs:
   # Trigger Building Everything
   ###
   build_all_depends:
+    if: github.repository_owner == 'tenstorrent'
     needs:
       - create-temp-branch
       - versionchange
