@@ -1,3 +1,29 @@
+tt-kmd (2.4.0) noble; urgency=medium
+
+  [ Joel Smith ]
+  * Make device removal robust during hot-plug
+
+  [ John 'Warthog9' Hawley ]
+  * Adding in the workflows we are using elsewhere
+
+  [ Joel Smith ]
+  * Add new ASIC reset ioctls and implementation
+  * Add userspace reset tool
+  * Rename post_hardware_init() to init_telemetry()
+  * Blackhole: Do a Secondary Bus Reset in reset path
+  * Refactor telemetry initialization and sysfs
+  * wormhole: Defer telemetry setup until FW is ready
+  * Print PCI bus number in hexadecimal at enumeration
+  * Improve Wormhole reset robustness
+  * test
+  * test
+  * test
+
+  [ Tenstorrent Releases ]
+  * Updating version to 2.4.0-testing
+
+ -- Tenstorrent Releases <releases@tenstorrent.com>  Thu, 28 Aug 2025 17:24:25 +0000
+
 tt-kmd (2.3.0) unstable; urgency=medium
 
   * Add new 'tt_asic_id' sysfs attribute for Wormhole.
