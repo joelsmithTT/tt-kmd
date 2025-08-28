@@ -249,6 +249,7 @@ jobs:
   # Tag the Release
   ###
   tagrelease:
+    if: always()
     name: Tag the Release
     needs:
       - versionchange
@@ -281,6 +282,7 @@ jobs:
   ###
   generate-release:
     name: Create GitHub Release
+    if: always()
     needs:
       - create-temp-branch
       - versionchange
@@ -349,10 +351,10 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ttkmd-${{ needs.versionchange.outputs.package_version_new }}
-          files: |
-            ${{ github.workspace }}/${{ env.project_name }}*/*.deb
-            ${{ github.workspace }}/tenstorrent-dkms*/*.deb
-            ${{ github.workspace }}/[!artifacts-]*/*.deb
+#         files: |
+#           ${{ github.workspace }}/${{ env.project_name }}*/*.deb
+#           ${{ github.workspace }}/tenstorrent-dkms*/*.deb
+#           ${{ github.workspace }}/[!artifacts-]*/*.deb
           body: ${{ steps.build_changelog.outputs.changelog }}
           draft: false
           prerelease: false
@@ -361,6 +363,7 @@ jobs:
   # Merge back
   ###
   mergeback:
+    if: always()
     needs:
       - create-temp-branch
       - generate-release
