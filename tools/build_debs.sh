@@ -15,13 +15,8 @@ HOMEPAGE="https://github.com/tenstorrent/tt-kmd"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Parse version from module.h or use argument
+# Parse version from module.h
 get_version() {
-    if [[ $# -gt 0 ]]; then
-        echo "$1"
-        return
-    fi
-    
     local module_h="${PROJECT_ROOT}/module.h"
     if [[ ! -f "${module_h}" ]]; then
         echo "Error: module.h not found at ${module_h}" >&2
@@ -42,8 +37,20 @@ get_version() {
     echo "${major}.${minor}.${patch}${suffix}"
 }
 
-# Get version
-VERSION=$(get_version "$@")
+# Get version from module.h
+VERSION=$(get_version)
+
+# Sanity check: verify dkms.conf matches module.h
+DKMS_VERSION=$(grep -E '^\s*PACKAGE_VERSION\s*=' "${PROJECT_ROOT}/dkms.conf" | sed -E 's/.*"(.*)".*/\1/')
+if [[ "${VERSION}" != "${DKMS_VERSION}" ]]; then
+    echo "Error: Version mismatch!" >&2
+    echo "  module.h: ${VERSION}" >&2
+    echo "  dkms.conf: ${DKMS_VERSION}" >&2
+    echo "" >&2
+    echo "These must match. Please update dkms.conf or module.h to match." >&2
+    exit 1
+fi
+
 echo "Building ${PACKAGE_NAME} version ${VERSION}"
 
 # Create temporary build directory
@@ -87,9 +94,6 @@ done
 
 # Make dkms-post-install executable
 chmod 755 "${SRC_DIR}/dkms-post-install"
-
-# Update dkms.conf with correct version
-sed -i "s/PACKAGE_VERSION=\".*\"/PACKAGE_VERSION=\"${VERSION}\"/" "${SRC_DIR}/dkms.conf"
 
 # Create control file
 cat > "${DEBIAN_DIR}/control" << EOF

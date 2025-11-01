@@ -10,10 +10,6 @@ on:
         default: ${{ github.ref }}
         required: false
         type: string
-      version:
-        description: 'Optional version override (e.g., 2.5.0-rc1)'
-        required: false
-        type: string
 
 jobs:
   build-debian:
@@ -21,7 +17,6 @@ jobs:
     uses: ./.github/workflows/build-debian-new.yml
     with:
       ref: ${{ inputs.ref }}
-      version: ${{ inputs.version }}
     secrets: inherit
 
   build-rpm:
