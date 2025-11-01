@@ -1,0 +1,34 @@
+name: Build All Packages (New)
+run-name: Build All Packages
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to build from'
+        default: ${{ github.ref }}
+        required: false
+        type: string
+      version:
+        description: 'Optional version override (e.g., 2.5.0-rc1)'
+        required: false
+        type: string
+
+jobs:
+  build-debian:
+    name: Build Debian/Ubuntu Package
+    uses: ./.github/workflows/build-debian-new.yml
+    with:
+      ref: ${{ inputs.ref }}
+      version: ${{ inputs.version }}
+    secrets: inherit
+
+  build-rpm:
+    name: Build RPM Packages
+    uses: ./.github/workflows/build-rpm.yml
+    with:
+      ref: ${{ inputs.ref }}
+      # RPM build will need to be updated similarly, but keeping old interface for now
+    secrets: inherit
+
