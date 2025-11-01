@@ -18,7 +18,7 @@ on:
 jobs:
   build-deb:
     name: Build Debian/Ubuntu Package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -70,6 +70,6 @@ jobs:
           echo "=== Package Information ==="
           dpkg-deb --info tenstorrent-dkms_${{ steps.version.outputs.version }}_all.deb
           echo ""
-          echo "=== Package Signature (if signed) ==="
-          dpkg-sig --verify tenstorrent-dkms_${{ steps.version.outputs.version }}_all.deb || echo "Package not signed or dpkg-sig not available"
+          echo "=== Package Signature ==="
+          dpkg-sig --verify tenstorrent-dkms_${{ steps.version.outputs.version }}_all.deb || echo "Package not signed"
 
