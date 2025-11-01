@@ -1,4 +1,4 @@
-name: Build Debian/Ubuntu Packages (New) 📦
+name: Build debs
 
 on:
   workflow_dispatch:
