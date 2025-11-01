@@ -32,14 +32,14 @@ jobs:
           sudo apt install -y dpkg-dev dpkg-sig
 
       - name: Import GPG key for signing
+        continue-on-error: true
         uses: crazy-max/ghaction-import-gpg@v6
-        if: ${{ secrets.PKG_SIGNING_KEY_DEB }}
         with:
           gpg_private_key: ${{ secrets.PKG_SIGNING_KEY_DEB }}
 
       - name: Build package
         env:
-          SIGN_PACKAGE: ${{ secrets.PKG_SIGNING_KEY_DEB && '1' || '' }}
+          SIGN_PACKAGE: "1"
         run: |
           if [[ -n "${{ inputs.version }}" ]]; then
             ./tools/build_debs.sh "${{ inputs.version }}"
