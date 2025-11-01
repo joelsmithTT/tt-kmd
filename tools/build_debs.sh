@@ -115,7 +115,7 @@ cat > "${DEBIAN_DIR}/postinst" << 'EOF'
 #!/bin/sh
 set -e
 
-# Extract version from control file or dkms.conf
+# Version is set during package build
 VERSION="__VERSION__"
 MODULE_NAME="tenstorrent"
 
@@ -144,8 +144,6 @@ case "$1" in
         fi
         ;;
 esac
-
-#DEBHELPER#
 
 exit 0
 EOF
@@ -179,8 +177,6 @@ case "$1" in
         fi
         ;;
 esac
-
-#DEBHELPER#
 
 exit 0
 EOF
