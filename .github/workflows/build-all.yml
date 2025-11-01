@@ -14,7 +14,7 @@ on:
 jobs:
   build-debian:
     name: Build Debian/Ubuntu Package
-    uses: ./.github/workflows/build-debian-new.yml
+    uses: ./.github/workflows/build-debian.yml
     with:
       ref: ${{ inputs.ref }}
     secrets: inherit
