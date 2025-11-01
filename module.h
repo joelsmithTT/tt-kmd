@@ -8,9 +8,9 @@
 #include <linux/pci.h>
 
 #define TENSTORRENT_DRIVER_VERSION_MAJOR 2
-#define TENSTORRENT_DRIVER_VERSION_MINOR 5
-#define TENSTORRENT_DRIVER_VERSION_PATCH 0
-#define TENSTORRENT_DRIVER_VERSION_SUFFIX "-rc1"
+#define TENSTORRENT_DRIVER_VERSION_MINOR 6
+#define TENSTORRENT_DRIVER_VERSION_PATCH 12
+#define TENSTORRENT_DRIVER_VERSION_SUFFIX ""
 
 // Module options that need to be passed to other files
 extern uint dma_address_bits;
