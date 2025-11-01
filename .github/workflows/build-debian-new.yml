@@ -18,7 +18,7 @@ on:
 jobs:
   build-deb:
     name: Build Debian/Ubuntu Package
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,17 +30,9 @@ jobs:
       - name: Install minimal dependencies
         run: |
           sudo apt update
-          sudo apt install -y dpkg-dev dpkg-sig
-
-      - name: Import GPG key for signing
-        continue-on-error: true
-        uses: crazy-max/ghaction-import-gpg@v6
-        with:
-          gpg_private_key: ${{ secrets.PKG_SIGNING_KEY_DEB }}
+          sudo apt install -y dpkg-dev
 
       - name: Build package
-        env:
-          SIGN_PACKAGE: "1"
         run: |
           if [[ -n "${{ inputs.version }}" ]]; then
             ./tools/build_debs.sh "${{ inputs.version }}"
@@ -69,7 +61,4 @@ jobs:
         run: |
           echo "=== Package Information ==="
           dpkg-deb --info tenstorrent-dkms_${{ steps.version.outputs.version }}_all.deb
-          echo ""
-          echo "=== Package Signature ==="
-          dpkg-sig --verify tenstorrent-dkms_${{ steps.version.outputs.version }}_all.deb || echo "Package not signed"
 

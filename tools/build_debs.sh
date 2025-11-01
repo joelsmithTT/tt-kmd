@@ -200,17 +200,6 @@ mv "${BUILD_DIR}/${DEB_FILE}" "${OUTPUT_DIR}/"
 
 echo ""
 echo "Successfully built: ${OUTPUT_DIR}/${DEB_FILE}"
-
-# Sign package if GPG key is available
-if [[ -n "${SIGN_PACKAGE:-}" ]] && command -v dpkg-sig &> /dev/null; then
-    echo "Signing package..."
-    dpkg-sig --sign builder "${OUTPUT_DIR}/${DEB_FILE}"
-    echo "Package signed successfully"
-elif [[ -n "${PKG_SIGNING_KEY_DEB:-}" ]]; then
-    echo "Warning: PKG_SIGNING_KEY_DEB is set but signing was not performed"
-    echo "To sign, set SIGN_PACKAGE=1 and ensure dpkg-sig is installed"
-fi
-
 echo ""
 echo "Package details:"
 dpkg-deb --info "${OUTPUT_DIR}/${DEB_FILE}"
