@@ -1,4 +1,4 @@
-name: Build debs
+name: Build Deb Package
 
 on:
   workflow_dispatch:
