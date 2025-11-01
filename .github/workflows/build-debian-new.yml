@@ -3,6 +3,11 @@ name: Build Deb Package
 on:
   push:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version string (e.g., 2.5.0-rc1)'
+        required: false
+        type: string
   workflow_call:
     inputs:
       ref:
